@@ -30,8 +30,10 @@ POWER_ON             = 1
 STEERING_LEFT        = 12000
 STEERING_FORWORD     = 15000
 STEERING_RIGHT       = 18000
-MAX_MOTOR_SPEED      = 1000
-MIN_MOTOR_SPEED      = 1000
+
+# @brief スピード設定
+MAX_MOTOR_SPEED      = 350
+MIN_MOTOR_SPEED      = 0
 
 # @brief	進行方向定義
 DIR_FORWARD          = 1
@@ -52,17 +54,17 @@ CAM_ADJUST_WIDTH     = 80   #左右から80pix
 CAM_ADJUST_HEIGHT    = 150  #上から150px
 
 # @brief ライン領域の無視判定スレッシュ
-PIC_THRESH_MIN       = 2000
+PIC_THRESH_MIN       = 1900
 PIC_THRESH_MAX       = 10000
 
 
 # @brief ライン角度-直進判定
-STEER_ANGLE_MIN     = -10    
-STEER_ANGLE_MAX     = 10   
+STEER_ANGLE_MIN     = -40    
+STEER_ANGLE_MAX     = 40   
 
 # @brief ライン中心のずれ
-LINE_GAP_MIN       = -10
-LINE_GAP_MAX       = 10
+LINE_GAP_MIN       = -20
+LINE_GAP_MAX       = 20
 
 # @brief ステアリング調整用比例ゲイン(floatで指定可能)
 COEF_CENTERING     = 0.1
@@ -151,7 +153,7 @@ class auto_cruise:
     offset  = int( start_pt[0] )- (CAM_SETTING_WIDTH//2)
 
     # モーター速度を算出
-    speed   = MAX_MOTOR_SPEED - abs(duty)*4
+    speed   = MAX_MOTOR_SPEED# - abs(duty)*2
 
     self.drive_centering.value  = offset
     self.drive_steer.value      = duty
@@ -297,7 +299,7 @@ class auto_cruise:
 
       # ステアリング-コントローラ制御
       ###############################
-      if self.sixaxis_switch.value == 0:
+      if self.sixaxis_switch.value == 1:
 
         duty  = STEERING_FORWORD + (self.drive_steer.value*30) 
 
@@ -308,10 +310,10 @@ class auto_cruise:
 
         # ステアリングを制御
         if now_steer < duty:
-          now_steer = now_steer + 1
+          now_steer = now_steer + 10
           self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
         elif now_steer > duty:
-          now_steer = now_steer - 1
+          now_steer = now_steer - 10
           self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
 
       # ステアリング-自動制御
@@ -321,11 +323,11 @@ class auto_cruise:
         duty    = self.drive_steer.value
 
         #車体がラインに対して左右に曲がっている場合の調整
-        if duty < STEER_ANGLE_MIN & STEER_ANGLE_MAX < duty:
+        if duty < STEER_ANGLE_MIN or STEER_ANGLE_MAX < duty:
           now_steer += int(duty*COEF_ANGLE)
 
         #車体がライン中心に対してずれている場合の調整
-        if center < LINE_GAP_MIN & LINE_GAP_MAX < center:
+        if center < LINE_GAP_MIN or LINE_GAP_MAX < center:
           now_steer += int(center*COEF_CENTERING)
 
         #丸め込み
@@ -336,9 +338,9 @@ class auto_cruise:
 
         self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
 
-        print( (duty*COEF_ANGLE), self.drive_steer.value, now_steer)
+        print( "cdnter =", center, " duty =", duty,"now_steer =", now_steer, )
 
-      time.sleep(0.001)
+      time.sleep(0.002)
 
     # 停止
     print( "__driving stop" )
@@ -497,12 +499,12 @@ class auto_cruise:
 
             # Right Stick (horizontal)
             if ds3_num == 2:
-              if -32000 < ds3_val & ds3_val < 32000:
+              if -32000 < ds3_val and ds3_val < 32000:
                 self.drive_steer.value = ds3_val//25
 
             # Left Stick (vartical)        
             elif ds3_num == 1:
-              if -32000 < ds3_val & ds3_val < 32000:
+              if -32000 < ds3_val and ds3_val < 32000:
                 self.drive_motor.value = -1*(ds3_val//32)
 
         event = device.read(EVENT_SIZE)
