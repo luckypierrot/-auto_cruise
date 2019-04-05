@@ -31,8 +31,8 @@ STEERING_LEFT        = 12000
 STEERING_FORWORD     = 15000
 STEERING_RIGHT       = 18000
 
-# @brief スピード設定
-MAX_MOTOR_SPEED      = 350
+# @brief	モーター速度定義
+MAX_MOTOR_SPEED      = 500#345
 MIN_MOTOR_SPEED      = 0
 
 # @brief	進行方向定義
@@ -55,20 +55,34 @@ CAM_ADJUST_HEIGHT    = 150  #上から150px
 
 # @brief ライン領域の無視判定スレッシュ
 PIC_THRESH_MIN       = 1900
-PIC_THRESH_MAX       = 10000
-
+PIC_THRESH_MAX       = 15000
 
 # @brief ライン角度-直進判定
-STEER_ANGLE_MIN     = -40    
-STEER_ANGLE_MAX     = 40   
+STEER_ANGLE_MIN     = -30
+STEER_ANGLE_MAX     = 30
 
 # @brief ライン中心のずれ
-LINE_GAP_MIN       = -20
-LINE_GAP_MAX       = 20
+LINE_GAP_MIN       = -80
+LINE_GAP_MAX       = 80
 
-# @brief ステアリング調整用比例ゲイン(floatで指定可能)
-COEF_CENTERING     = 0.1
-COEF_ANGLE         = 0.1
+# @brief ステアリング調整用ゲイン(floatで指定可能)
+COEF_CENTERING     = 20.0
+COEF_CENTERING_2   = 0.05
+COEF_CENTERING_3   = 60.0
+
+COEF_ANGLE         = 20.0
+COEF_ANGLE_2       = 0.05
+COEF_ANGLE_3       = 60.0
+
+# @brief ステアリング現在値更新パラメータ
+INCREMENT_COEF     = 0.05
+INCREMENT_VAL      = 10
+
+# @brief Drivingプロセススリープ時間(sec)
+DRIVING_CYCLE      = 0.01
+
+# @brief スタート信号検出の領域面積の閾値
+GREEN_AREA_THRESH  = 10
 
 
 #####################################################################
@@ -84,6 +98,7 @@ class auto_cruise:
   drive_centering      = 0
   sixaxis_switch       = 1
   pi                   = 0
+
 
 
 #####################################################################
@@ -127,6 +142,9 @@ class auto_cruise:
     self.drive_active     = Value("i", DRIVE_START )
     self.sixaxis_switch   = Value("i", 0 )
 
+    #masuda
+    self.drive_pre_steer  = Value("i", 0)
+
     print( "init complete" )
 
 
@@ -137,9 +155,10 @@ class auto_cruise:
 #	@fn		    __cruiseCntrol
 #	@param		start_pt：ライン矩形の中心座標(x,y)
 #	@param		vec     ：ライン矩形のベクトル
+#	@param		state   ：レーン検出状況
 #	@brief		ライン矩形の形状からスピードとステアリングの制御を行う
 #####################################################################
-  def __cruiseCntrol( self, start_pt, vec ):
+  def __cruiseCntrol( self, start_pt, vec, state ):
 
     angle = math.atan2(vec[1], vec[0])
     if angle < 0:
@@ -152,12 +171,27 @@ class auto_cruise:
     # ライン中心座標の中央からの差分を算出(-160~160pix)
     offset  = int( start_pt[0] )- (CAM_SETTING_WIDTH//2)
 
-    # モーター速度を算出
-    speed   = MAX_MOTOR_SPEED# - abs(duty)*2
+    # モーター速度を設定
+    speed   = MAX_MOTOR_SPEED
 
-    self.drive_centering.value  = offset
-    self.drive_steer.value      = duty
-    self.drive_motor.value      = speed
+    # センターバリューの正負が同じ場合のみ、値を更新する
+    determineSign = self.drive_centering.value*offset
+
+    if state == 'find lane':
+      self.drive_centering.value  = offset
+      self.drive_steer.value      = duty
+      self.drive_motor.value      = speed
+      return True
+
+    elif state == 'no lane' and determineSign >= 0:
+      self.drive_centering.value  = offset
+      self.drive_steer.value      = duty
+      self.drive_motor.value      = speed
+      return True
+
+    else:
+      print("i")
+      return False
 
 
 
@@ -250,7 +284,16 @@ class auto_cruise:
 
     direction     = DIR_STOP
     now_speed     = 0
+    dst_steer     = STEERING_FORWORD
     now_steer     = STEERING_FORWORD
+
+    center        = 0
+    i_center      = 0
+    d_center      = 0
+
+    duty          = 0
+    i_duty        = 0
+    d_duty        = 0
 
     while self.drive_active.value == DRIVE_START:  
 
@@ -310,27 +353,55 @@ class auto_cruise:
 
         # ステアリングを制御
         if now_steer < duty:
-          now_steer = now_steer + 10
+          now_steer = now_steer + 20
           self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
         elif now_steer > duty:
-          now_steer = now_steer - 10
+          now_steer = now_steer - 20
           self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
 
       # ステアリング-自動制御
       ###############################
       else:
-        center  = self.drive_centering.value
-        duty    = self.drive_steer.value
+        d_center  = center - self.drive_centering.value
+        d_duty    = duty - self.drive_steer.value
 
-        #車体がラインに対して左右に曲がっている場合の調整
+        center    = self.drive_centering.value
+        duty      = self.drive_steer.value
+
+        #ラインが傾斜しているので、直交するように調整する
         if duty < STEER_ANGLE_MIN or STEER_ANGLE_MAX < duty:
-          now_steer += int(duty*COEF_ANGLE)
+          i_duty    +=  duty
+        else:
+          i_duty = 0
 
-        #車体がライン中心に対してずれている場合の調整
+        #ラインの中心軸から離れているので、近づくように調整する
         if center < LINE_GAP_MIN or LINE_GAP_MAX < center:
-          now_steer += int(center*COEF_CENTERING)
+          i_center  += center
+        else:
+          i_center = 0
 
-        #丸め込み
+        dst_steer =   STEERING_FORWORD
+
+        dst_steer +=  int(duty*COEF_ANGLE)             #目標との差分がある場合に調整する
+        dst_steer +=  int(i_duty*COEF_ANGLE_2)         #目標との差分に変化が無い場合に調整する
+        dst_steer +=  int(d_duty*COEF_ANGLE_3)         #前回値から変化が大きい場合に調整する
+
+        dst_steer +=  int(center*COEF_CENTERING)       #目標との差分がある場合に調整する
+        dst_steer +=  int(i_center*COEF_CENTERING_2)   #目標との差分に変化が無い場合に調整する
+        dst_steer +=  int(d_center*COEF_CENTERING_3)   #前回値から変化が大きい場合に調整する
+
+        print( "duty",   int(duty*COEF_ANGLE),       "i_duty",   int(i_duty*COEF_ANGLE_2),       "d_duty",   int(d_duty*COEF_ANGLE_3)       )
+        print( "center", int(center*COEF_CENTERING), "i_center", int(i_center*COEF_CENTERING_2), "d_center", int(d_center*COEF_CENTERING_3) )
+
+        #現在値を目標に近づける
+        if now_steer < dst_steer:
+          param = dst_steer - now_steer
+          now_steer += ( INCREMENT_VAL + int(param*INCREMENT_COEF) ) 
+        elif now_steer > dst_steer:
+          param = now_steer - dst_steer
+          now_steer -= ( INCREMENT_VAL + int(param*INCREMENT_COEF) )
+
+        #現在値を丸め込み
         if now_steer < STEERING_LEFT:
            now_steer = STEERING_LEFT 
         elif now_steer > STEERING_RIGHT:
@@ -338,9 +409,9 @@ class auto_cruise:
 
         self.pi.set_servo_pulsewidth( GPIO_STEERING_PWM,	now_steer//10 )
 
-        print( "cdnter =", center, " duty =", duty,"now_steer =", now_steer, )
+        print( "dst_steer =", dst_steer, "now_steer =", now_steer )
 
-      time.sleep(0.002)
+      time.sleep( DRIVING_CYCLE )
 
     # 停止
     print( "__driving stop" )
@@ -368,25 +439,44 @@ class auto_cruise:
     x3 = ( CAM_SETTING_WIDTH, CAM_SETTING_HEIGHT )
     x4 = ( 0, CAM_SETTING_HEIGHT )
 
+    lane_state = 'find lane'
+
+    #スタート信号の検出
+    while self.drive_active.value == DRIVE_START: 
+        ret, img = cap.read()
+
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        lower     = np.array([50, 100, 100])
+        upper     = np.array([70, 255, 255])
+
+        img_mask  = cv2.inRange( hsv, lower, upper )
+        img_green = cv2.bitwise_and( img, img, mask=img_mask )
+
+        img_gray  = cv2.cvtColor(img_green, cv2.COLOR_BGR2GRAY)
+        size      = cv2.countNonZero(img_gray)
+        print('green ', size)
+        if size > GREEN_AREA_THRESH:
+            self.pi.write( GPIO_MOTOR_STBY, 1 )
+            print("motor driver on")
+            break
+
+    #ライン検出処理
     while self.drive_active.value == DRIVE_START:
 
       # 画像を読み込む 
       ret, src = cap.read()
 
-      # グレースケールに変換
-      gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+      # ２値化
+      lower     = np.array([0, 0, 0])
+      upper     = np.array([100, 100, 100])
+      gray      = cv2.inRange( src, lower, upper )
 
       # 台形変換
       pts1    = np.float32( [x1,x2,x3,x4] )
       pts2    = np.float32([[0,0],[CAM_SETTING_WIDTH,0],[CAM_SETTING_WIDTH,CAM_SETTING_HEIGHT],[0,CAM_SETTING_HEIGHT]])
       M       = cv2.getPerspectiveTransform(pts1,pts2)
-      dst     = cv2.warpPerspective(gray,M,(CAM_SETTING_WIDTH, CAM_SETTING_HEIGHT))
-
-      # ２値化
-      retval, bw = cv2.threshold(dst, 10, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-
-      # 白黒反転
-      bw = cv2.bitwise_not(bw)
+      bw      = cv2.warpPerspective(gray,M,(CAM_SETTING_WIDTH, CAM_SETTING_HEIGHT))
 
       # 輪郭を抽出
       img, contours, hierarchy = cv2.findContours(bw, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
@@ -411,7 +501,7 @@ class auto_cruise:
           # レーンのベクトルを計算する
           if result == 'find lane':
             #矩形描画
-            cv2.drawContours( dst,[box],0,(0,0,255),2 )   
+            #cv2.drawContours( bw,[box],0,(0,0,255),2 )   
 
             # 輪郭データを浮動小数点型の配列に格納
             X = np.array(contours[i], dtype=np.float).reshape((contours[i].shape[0], contours[i].shape[2]))
@@ -421,12 +511,17 @@ class auto_cruise:
 
             pt  = (mean[0][0], mean[0][1])
             vec = (eigenvectors[0][0], eigenvectors[0][1])
-            self.__cruiseCntrol( pt, vec )
+
+            if self.__cruiseCntrol( pt, vec, lane_state ) == True:
+              lane_state = 'find lane'
+
             break
 
+        if result == 'no lane':
+          lane_state = result
+
       # 表示
-      #cv2.imshow('input', gray ) #
-      cv2.imshow('output', dst )
+      cv2.imshow('output', bw )
 
       key = cv2.waitKey(1)
 
